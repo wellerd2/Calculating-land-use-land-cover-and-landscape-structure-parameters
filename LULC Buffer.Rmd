@@ -1,0 +1,202 @@
+Title: Calculate proportion of each land cover class (cropland, pasture, forest-wetland, shrubland, grassland, barren, open water, developed open space, and developed) as well as impervious cover around each river, lake, pond, or other sampling site using buffers of 122, 366, and 1098.  
+Author: Daniel Weller
+Updated: 7 28 2020
+
+Methods:
+(1) Import sample site shapefiles and csv as well as the National Land Cover Data into R.
+(2) Confirm all files are in Albers Equal Area; reproject if needed. 
+(3) Recode NLCD data so there is a new file, where the LULC categories are: for.wet, dev.open, dev, pasture, cropland, grass, shrub, open water, and barren cover.
+(4) Create overlapping buffers around the sampling sites for each of the distance classes listed above which 0 to 122 m, 0 to 366 m, and o to 1,098 m.
+(5) For each buffer distance determine the total number of pixels within said buffer for each LULC from [3], and convert this to a percentage.
+
+# Required Libraries
+```{r}
+library(lwgeom)
+library(sf)
+library(spatial)
+library(rgeos)
+library(dplyr)
+library(raster)
+library(gtools)
+library(maptools)   # for geospatial services; also loads foreign and sp
+library(rgdal)  # for map projection work; also loads sp
+```
+
+# Step 1: Import relevant land use raster data
+```{r}
+nlcd_2016<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2016_Land_Cover_L48_20190424.img")
+nlcd_2013<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2013_Land_Cover_L48_20190424.img")
+nlcd_2011<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2011_Land_Cover_L48_20190424.img")
+nlcd_2008<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2008_Land_Cover_L48_20190424.img")
+nlcd_2006<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2006_Land_Cover_L48_20190424.img")
+nlcd_2004<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2004_Land_Cover_L48_20190424.img")
+nlcd_2001<-raster::raster("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/NLCD Files/NLCD_2001_Land_Cover_L48_20190424.img")
+res(nlcd_2011) # tells you the size in m of the pixels; should be 30 m by 30 m
+AlbersEqual83<-as.character(crs(nlcd_2011))
+```
+
+Steps 2: We will need to recode NLCD date so the LULC categories are those described above. The code for doing this was adapted from (https://www.earthdatascience.org/courses/earth-analytics/lidar-raster-data-r/classify-raster/). The first step in doing this is to create a reclassification matrix. This matrix maps a range of values to a new defined value. We used the Anderson Level 1 Land Use Classifications and Descriptions. To best meet these descriptions LULC Codes 21-24 will be combined in future analyses. 
+```{r}
+# To reclassify your raster, first you need to create a reclassification matrix.
+reclass_df <- c(11, 11, 11, # Water
+                21, 21, 21, # Developed Open Space (Impervious < 20%)
+                22, 24, 22, # Developed  (Impervious > 20%)
+                31, 31, 31, # Barren
+                41, 52, 41, # Forest and Shrubland (Open in Anderson Level I)
+                71, 74, 71, # Grassland and Herbaceous Cover
+                81, 81, 81, # Pasture 
+                82, 82, 82, # Cropland 
+                90, 95, 90) # Wetlands
+
+# reshape the object into a matrix with columns and rows
+reclass_m <- matrix(reclass_df,
+                ncol = 3,
+                byrow = TRUE)
+reclass_m # check that it matches the outline above; make sure first column matches the first column
+```
+Create a loop so that for each buffer distance in each watershed you extract the number of pixels of each reclassed LULC but before we do this, we need to create empty dataframes to dump our measurements into.
+
+Load sites and split by year
+```{r}
+setwd("C:/Users/lstrawn/Desktop/DAN-USDA_SCRI")
+training <- read.csv("Data_from_CM/ok buffers 3.13.2021.csv")
+training$date1 <- as.POSIXct(training$date, format="%m/%d/%Y")
+training$year<-as.numeric(strftime(training$date1,'%Y'))
+training$lat2<-abs(training$long)
+training$long<--1*abs(training$lat)
+training$lat<-training$lat2
+table(training$year)
+training.csv<-training
+training<-training[!is.na(training$long), ]
+training <- st_as_sf(training, coords=c(x="long", y="lat"), crs=4979)%>%st_transform(crs=AlbersEqual83)
+```
+
+Adapt the code below for use with the correct land use raster file (i.e., depending on year)
+```{r}
+# make empty area dataframes
+lulc_table <- data.frame(t(as.matrix(1:11)))
+colnames(lulc_table)<-c("11", "21", "22","31", "41","81", "82", "90", "71","site_id", "buffer")
+lulc_table$site_id<-as.character(lulc_table$site_id)
+lulc_table<-subset(lulc_table, site_id!=10)
+
+area_122m <- data.frame(t(as.matrix(1:11)))
+colnames(area_122m)<-c("11", "21", "22", "31", "41","81", "82", "90", "71","site_id", "buffer")
+area_122m$site_id<-as.character(area_122m$site_id)
+area_122m<-subset(area_122m, site_id!=10)
+
+area_366m <- data.frame(t(as.matrix(1:11)))
+colnames(area_366m)<-c("11", "21", "22", "31", "41","81", "82", "90", "71","site_id", "buffer")
+area_366m$site_id<-as.character(area_366m$site_id)
+area_366m<-subset(area_366m, site_id!=10)
+
+area_1098m <- data.frame(t(as.matrix(1:11)))
+colnames(area_1098m)<-c("11", "21", "22", "31", "41","81", "82", "90", "71","site_id", "buffer")
+area_1098m$site_id<-as.character(area_1098m$site_id)
+area_1098m<-subset(area_1098m, site_id!=10)
+
+# leaflet() %>% addTiles() %>%addCircleMarkers(data = training)
+training_2001<- subset(training, training$year<="2001" | training$year=="2002")
+
+nrow(training_2001)
+table(training_2001$year)
+
+# The nlcd file is large and difficult to work with. Crop the raster so only area bounding the sampled watersheds is retained. I used the approach described in this stackoverflow chain (https://stackoverflow.com/questions/23073669/clipping-raster-using-shapefile-in-r-but-keeping-the-geometry-of-the-shapefile) with some modifications.
+training_2001_6kbuff <- as_Spatial(training_2001)%>%gBuffer(width=2000)
+nlcd_2001_terr<-raster::crop(x=nlcd_2001,y=training_2001_6kbuff)
+nlcd_2001_terr<-raster::mask(x=nlcd_2001_terr,mask=training_2001_6kbuff)
+dataType(nlcd_2001_terr)<-'INT1U'
+dataType(nlcd_2001_terr)
+
+# Reclassify the nlcd_2011 data
+nlcd_2001_terr_reclass <- reclassify(nlcd_2001_terr,  reclass_m, datatype="INT1U")
+dataType(nlcd_2001_terr_reclass)<-"INT1U"
+dataType(nlcd_2001_terr_reclass)
+table(values(nlcd_2001_terr_reclass))
+
+# Create a loop so that for each buffer distance in each watershed you extract the number of pixels of each reclassed LULC.
+for(i in 1:nrow(training_2001)){
+  rowname_temp<-training_2001$site_id[i]
+  # Create Temporary Dataframe
+  area_temp <- data.frame(t(as.matrix(1:12)))
+  colnames(area_temp)<-c("11", "21", "22", "31", "41","81", "82", "90" ,"71","total_pixels","site_id", "buffer")
+  # 122 m 
+  site_temp_122m<-st_buffer(training_2001[i,],122)
+  clippy_122m<-raster::crop(x=nlcd_2001_terr_reclass, y=as_Spatial(site_temp_122m))%>%raster::mask(mask=as_Spatial(site_temp_122m))
+  freq_122m<-table(values(clippy_122m))%>%as.data.frame()
+  freq_122m_transposed<-t(freq_122m)%>%as.data.frame()
+  freq_122m_transposed2<-as.data.frame(freq_122m_transposed[2,])
+  colnames(freq_122m_transposed2)<-freq_122m$Var1 
+  freq_122m_transposed2$total_pixels<-0
+  freq_122m_transposed2$total_pixels<-sum(freq_122m$Freq)
+  freq_122m_transposed2$site_id<-rowname_temp
+  area_122m<-smartbind(area_122m, freq_122m_transposed2,fill=0)
+  # 366 m 
+  site_temp_366m<-st_buffer(training_2001[i,],366)
+  site_temp_366m_er<-st_difference(site_temp_366m, site_temp_122m)
+  clippy_366m<-raster::crop(x=nlcd_2001_terr_reclass, y=as_Spatial(site_temp_366m))%>%raster::mask(mask=as_Spatial(site_temp_366m_er))
+  freq_366m<-table(values(clippy_366m))%>%as.data.frame()
+  freq_366m_transposed<-t(freq_366m)%>%as.data.frame()
+  freq_366m_transposed2<-as.data.frame(freq_366m_transposed[2,])
+  colnames(freq_366m_transposed2)<-freq_366m$Var1 
+  freq_366m_transposed2$total_pixels<-0
+  freq_366m_transposed2$total_pixels<-sum(freq_366m$Freq)
+  freq_366m_transposed2$site_id<-rowname_temp
+  area_366m<-smartbind(area_366m, freq_366m_transposed2,fill=0)
+  # 250 m 
+  site_temp_1098m<-st_buffer(training_2001[i,],1098)
+  site_temp_1098m_er<-st_difference(site_temp_1098m, site_temp_122m)
+  clippy_1098m<-raster::crop(x=nlcd_2001_terr_reclass, y=as_Spatial(site_temp_1098m))%>%raster::mask(mask=as_Spatial(site_temp_1098m_er))
+  freq_1098m<-table(values(clippy_1098m))%>%as.data.frame()
+  freq_1098m_transposed<-t(freq_1098m)%>%as.data.frame()
+  freq_1098m_transposed2<-as.data.frame(freq_1098m_transposed[2,])
+  colnames(freq_1098m_transposed2)<-freq_1098m$Var1 
+  freq_1098m_transposed2$total_pixels<-0
+  freq_1098m_transposed2$total_pixels<-sum(freq_1098m$Freq)
+  freq_1098m_transposed2$site_id<-rowname_temp
+  area_1098m<-smartbind(area_1098m, freq_1098m_transposed2,fill=0)
+  
+  # Combine each distance matrix into a single temporary dataframe
+  freq_122m_transposed2$buffer<-122
+  freq_366m_transposed2$buffer<-366
+  freq_1098m_transposed2$buffer<-1098
+  
+  area_temp<-smartbind(area_temp, freq_1098m_transposed2, freq_366m_transposed2,freq_122m_transposed2, fill=0)
+  area_temp$site_id<-as.character(area_temp$site_id)
+  indx <- sapply(area_temp, is.factor)
+  area_temp[indx] <- lapply(area_temp[indx], function(x) as.numeric(as.character(x)))
+  area_temp[is.na(area_temp)] <- 0
+  
+  total_pixels<-as.data.frame(t(area_temp))
+  total_pixels<-total_pixels$total_pixels
+  total_pixels<-as.numeric(as.character(total_pixels))
+  total_pixels<-as.data.frame(total_pixels)
+  area_temp[,1]<-as.numeric(as.character(area_temp[,1]))
+  area_temp[,2]<-as.numeric(as.character(area_temp[,2]))
+  area_temp[,3]<-as.numeric(as.character(area_temp[,3]))
+  area_temp[,4]<-as.numeric(as.character(area_temp[,4]))
+  area_temp[,5]<-as.numeric(as.character(area_temp[,5]))
+  area_temp[,6]<-as.numeric(as.character(area_temp[,6]))
+  area_temp[,7]<-as.numeric(as.character(area_temp[,7]))
+  area_temp[,8]<-as.numeric(as.character(area_temp[,8]))
+  area_temp[,9]<-as.numeric(as.character(area_temp[,9]))
+  area_temp[,10]<-as.numeric(as.character(area_temp[,10]))
+  
+  # Calculate, using inverse distance weighting,the percent of land cover in the watershed with each lulc class. 
+  lulc_table<-smartbind(lulc_table, area_temp, fill=0)
+}
+lulc_table<-subset(lulc_table, site_id!="11")
+
+colnames(lulc_table)<-c("Water", "OpenDev", "Dev", "Barren","Forest","Pasture", "Cropland", "Wetland", "Grassland", "Total_Pixel","Site","Buffer") 
+
+lulc_table$forwet<-(lulc_table$Forest+lulc_table$Wetland)
+lulc_table$ag<-(lulc_table$Pasture+lulc_table$Cropland)
+lulc_table$dev.total<-(lulc_table$OpenDev+lulc_table$Dev)
+
+lulc_table$year<-2001
+
+lulc_table[,c(17:28)]<-round((lulc_table[,c(1:9, 13, 14, 15)] / lulc_table[,10])*100, 2) 
+
+colnames(lulc_table)<-c("Pix.Water", "Pix.OpenDev", "Pix.Dev", "Pix.Barren","Pix.Forest","Pix.Pasture", "Pix.Cropland", "Pix.Wetland", "Pix.Grassland","Total.Pixels","Site","Buffer",  "Pix.Forwet", "Pix.Ag", "Pix.DevTotal","Year","Prop.Water", "Prop.OpenDev", "Prop.Dev", "Prop.Barren","Prop.Forest","Prop.Pasture", "Prop.Cropland", "Prop.Wetland", "Prop.Grassland","Prop.Forwet", "Prop.Ag", "Prop.DevTotal") 
+View(lulc_table)
+# write.csv(lulc_table, file="C:/Users/lstrawn/Desktop/DAN-USDA_SCRI/Landuse_by_Dataset/OK3/Sites.Training.2001.csv")
+```
