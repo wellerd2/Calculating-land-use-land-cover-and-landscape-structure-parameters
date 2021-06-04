@@ -1,10 +1,8 @@
 # Calculating-land-use-land-cover-and-landscape-structure-parameters
 
-Title: Calculate proportion of each land cover class (cropland, pasture, forest-wetland, shrubland, grassland, barren, open water, developed open space, and developed) as well as impervious cover around each river, lake, pond, or other sampling site using buffers of 122, 366, and 1098.  
-Author: Daniel Weller
-Updated: 7 28 2020
+This code calculates the proportion of each land cover class (cropland, pasture, forest-wetland, shrubland, grassland, barren, open water, developed open space, and developed) as well as impervious cover around each river, lake, pond, or other sampling site using buffers of 122, 366, and 1098.  
 
-Methods:
+Overview of Methods:
 (1) Import sample site shapefiles and csv as well as the National Land Cover Data into R.
 (2) Confirm all files are in Albers Equal Area; reproject if needed. 
 (3) Recode NLCD data so there is a new file, where the LULC categories are: for.wet, dev.open, dev, pasture, cropland, grass, shrub, open water, and barren cover.
